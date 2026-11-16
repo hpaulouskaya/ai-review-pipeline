@@ -1,0 +1,14 @@
+[
+  {
+    "submission_id": "APP001",
+    "expected_verdict": "approved"
+  },
+  {
+    "submission_id": "APP002",
+    "expected_verdict": "rejected"
+  },
+  {
+    "submission_id": "APP003",
+    "expected_verdict": "approved"
+  }
+]

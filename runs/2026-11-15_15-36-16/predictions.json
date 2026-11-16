@@ -1,0 +1,62 @@
+[
+  {
+    "submission_id": "APP001",
+    "checks": [
+      {
+        "policy_check": "metadata_quality",
+        "verdict": "PASS",
+        "justification": "The application has a meaningful name and a clear description explaining it is an educational game for children to practice math."
+      },
+      {
+        "policy_check": "real_money_gambling",
+        "verdict": "PASS",
+        "justification": "The description does not indicate any real-money gambling or cash prizes."
+      },
+      {
+        "policy_check": "child_safety",
+        "verdict": "PASS",
+        "justification": "The description focuses on educational content for children and does not promote dangerous activities or unsafe interactions."
+      }
+    ]
+  },
+  {
+    "submission_id": "APP002",
+    "checks": [
+      {
+        "policy_check": "metadata_quality",
+        "verdict": "PASS",
+        "justification": "The application name is meaningful and the description clearly explains the purpose of the app as a casino for playing slot machines and winning cash prizes."
+      },
+      {
+        "policy_check": "real_money_gambling",
+        "verdict": "FAIL",
+        "justification": "The description states users can deposit real money and win cash prizes, indicating involvement in real-money gambling."
+      },
+      {
+        "policy_check": "child_safety",
+        "verdict": "PASS",
+        "justification": "There is no information indicating the app promotes dangerous activities or unsafe interactions involving children."
+      }
+    ]
+  },
+  {
+    "submission_id": "APP003",
+    "checks": [
+      {
+        "policy_check": "metadata_quality",
+        "verdict": "PASS",
+        "justification": "The application has a meaningful name and a clear description explaining that it helps users track workouts, daily steps, and fitness goals."
+      },
+      {
+        "policy_check": "real_money_gambling",
+        "verdict": "PASS",
+        "justification": "The description does not indicate any gambling involving real-money wagers or cash prizes."
+      },
+      {
+        "policy_check": "child_safety",
+        "verdict": "PASS",
+        "justification": "There is no indication that the application promotes dangerous activities for children or unsafe interactions involving children."
+      }
+    ]
+  }
+]

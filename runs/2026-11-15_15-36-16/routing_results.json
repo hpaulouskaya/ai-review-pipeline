@@ -1,0 +1,97 @@
+[
+  {
+    "submission_id": "APP001",
+    "workflow_status": "AUTOMATED_CHECKS_COMPLETE",
+    "human_review_checks": [],
+    "checks": [
+      {
+        "policy_check": "metadata_quality",
+        "verdict": "PASS",
+        "justification": "The application has a meaningful name and a clear description explaining it is an educational game for children to practice math.",
+        "routing_action": "AUTO_APPROVE",
+        "result_source": "AI",
+        "routing_reason": "CONFIG_ALLOWS_AUTO_APPROVE"
+      },
+      {
+        "policy_check": "real_money_gambling",
+        "verdict": "PASS",
+        "justification": "The description does not indicate any real-money gambling or cash prizes.",
+        "routing_action": "AUTO_APPROVE",
+        "result_source": "AI",
+        "routing_reason": "CONFIG_ALLOWS_AUTO_APPROVE"
+      },
+      {
+        "policy_check": "child_safety",
+        "verdict": "PASS",
+        "justification": "The description focuses on educational content for children and does not promote dangerous activities or unsafe interactions.",
+        "routing_action": "AUTO_APPROVE",
+        "result_source": "AI",
+        "routing_reason": "CONFIG_ALLOWS_AUTO_APPROVE"
+      }
+    ]
+  },
+  {
+    "submission_id": "APP002",
+    "workflow_status": "PENDING_HUMAN_REVIEW",
+    "human_review_checks": [
+      "real_money_gambling"
+    ],
+    "checks": [
+      {
+        "policy_check": "metadata_quality",
+        "verdict": "PASS",
+        "justification": "The application name is meaningful and the description clearly explains the purpose of the app as a casino for playing slot machines and winning cash prizes.",
+        "routing_action": "AUTO_APPROVE",
+        "result_source": "AI",
+        "routing_reason": "CONFIG_ALLOWS_AUTO_APPROVE"
+      },
+      {
+        "policy_check": "real_money_gambling",
+        "verdict": "FAIL",
+        "justification": "The description states users can deposit real money and win cash prizes, indicating involvement in real-money gambling.",
+        "routing_action": "HUMAN_REVIEW",
+        "result_source": "PENDING_HUMAN",
+        "routing_reason": "CONFIG_REQUIRES_HUMAN"
+      },
+      {
+        "policy_check": "child_safety",
+        "verdict": "PASS",
+        "justification": "There is no information indicating the app promotes dangerous activities or unsafe interactions involving children.",
+        "routing_action": "AUTO_APPROVE",
+        "result_source": "AI",
+        "routing_reason": "CONFIG_ALLOWS_AUTO_APPROVE"
+      }
+    ]
+  },
+  {
+    "submission_id": "APP003",
+    "workflow_status": "AUTOMATED_CHECKS_COMPLETE",
+    "human_review_checks": [],
+    "checks": [
+      {
+        "policy_check": "metadata_quality",
+        "verdict": "PASS",
+        "justification": "The application has a meaningful name and a clear description explaining that it helps users track workouts, daily steps, and fitness goals.",
+        "routing_action": "AUTO_APPROVE",
+        "result_source": "AI",
+        "routing_reason": "CONFIG_ALLOWS_AUTO_APPROVE"
+      },
+      {
+        "policy_check": "real_money_gambling",
+        "verdict": "PASS",
+        "justification": "The description does not indicate any gambling involving real-money wagers or cash prizes.",
+        "routing_action": "AUTO_APPROVE",
+        "result_source": "AI",
+        "routing_reason": "CONFIG_ALLOWS_AUTO_APPROVE"
+      },
+      {
+        "policy_check": "child_safety",
+        "verdict": "PASS",
+        "justification": "There is no indication that the application promotes dangerous activities for children or unsafe interactions involving children.",
+        "routing_action": "AUTO_APPROVE",
+        "result_source": "AI",
+        "routing_reason": "CONFIG_ALLOWS_AUTO_APPROVE"
+      }
+    ]
+  }
+]

@@ -1,0 +1,14 @@
+{
+  "metadata_quality": {
+    "auto_approve": true,
+    "auto_reject": false
+  },
+  "real_money_gambling": {
+    "auto_approve": true,
+    "auto_reject": false
+  },
+  "child_safety": {
+    "auto_approve": true,
+    "auto_reject": false
+  }
+}

@@ -1,0 +1,17 @@
+[
+  {
+    "submission_id": "APP001",
+    "predicted_verdict": "approved",
+    "justification": "The application is an educational game for children to practice math, and does not promote gambling with real money. Therefore, it complies with thepolicy and should be approved."
+  },
+  {
+    "submission_id": "APP002",
+    "predicted_verdict": "rejected",
+    "justification": "The application allows users to deposit real money and play slot machines to win cash prizes, which constitutes real money gambling. This violates the policy that prohibits applications promoting real money gambling."
+  },
+  {
+    "submission_id": "APP003",
+    "predicted_verdict": "approved",
+    "justification": "The application is a fitness tracking app that helps users monitor workouts, daily steps, and fitness goals. It does not promote gambling with real money and therefore complies with the policy."
+  }
+]

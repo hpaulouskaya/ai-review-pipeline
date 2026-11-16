@@ -1,0 +1,17 @@
+[
+  {
+    "submission_id": "APP001",
+    "app_name": "Kids Math Adventure",
+    "description": "An educational game that helps children ages 6–10 practice math through puzzles and interactive challenges."
+  },
+  {
+    "submission_id": "APP002",
+    "app_name": "Lucky Spin Casino",
+    "description": "A mobile casino app where users can deposit real money and play slot machines to win cash prizes."
+  },
+  {
+    "submission_id": "APP003",
+    "app_name": "Daily Fitness Tracker",
+    "description": "A fitness app that helps users track workouts, daily steps, and personal fitness goals."
+  }
+]
