@@ -1,14 +1,26 @@
 [
   {
     "submission_id": "APP001",
-    "expected_verdict": "approved"
+    "expected_checks": {
+      "metadata_quality": "PASS",
+      "real_money_gambling": "PASS",
+      "child_safety": "PASS"
+    }
   },
   {
     "submission_id": "APP002",
-    "expected_verdict": "rejected"
+    "expected_checks": {
+      "metadata_quality": "PASS",
+      "real_money_gambling": "FAIL",
+      "child_safety": "PASS"
+    }
   },
   {
     "submission_id": "APP003",
-    "expected_verdict": "approved"
+    "expected_checks": {
+      "metadata_quality": "PASS",
+      "real_money_gambling": "PASS",
+      "child_safety": "PASS"
+    }
   }
 ]

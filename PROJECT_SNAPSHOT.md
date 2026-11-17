@@ -1,11 +1,12 @@
 # Project Snapshot — Mini Eval Harness
 
-**Checkpoint:** M04 complete (check-level routing + submission workflow tracking)
+**Checkpoint:** M05 complete (golden dataset + check-level evals)
+**Previous checkpoint:** M04 (check-level routing + submission workflow) — commit `185a171`
 **Date:** 2026-11-16
 **Python:** 3.13 (`.venv`), dependency: `openai==3.46.0`
 
-> The README currently describes only the legacy evaluator (`main.py`).
-> This file is the up-to-date description of the project.
+> [README.md](README.md) explains how to run the pipeline and the evaluator.
+> This file describes architecture, contracts, status and limitations.
 
 ---
 
@@ -13,15 +14,16 @@
 
 An AI app-review pipeline:
 
-1. An LLM reviews each app submission against three independent policy checks
-   and returns a `PASS`/`FAIL` verdict with a justification for each.
-2. A routing engine decides, per check, whether the AI result can be used
-   automatically or needs a human reviewer, based on configurable permissions.
-3. Each submission gets a workflow status showing whether any checks still
-   await human review.
+1. **Inference:** an LLM reviews each app submission against three independent
+   policy checks and returns a `PASS`/`FAIL` verdict with a justification for each.
+2. **Routing:** decides, per check, whether the AI result can be used
+   automatically or needs a human reviewer; tracks whether each submission
+   still awaits human review.
+3. **Evaluation:** measures the model's verdicts against a hand-labelled
+   golden dataset for every (submission, policy check) pair.
 
-Final developer-facing decisions (approve/reject the app), notifications and
-enforcement are **out of scope** and belong to a later downstream layer.
+Final developer-facing decisions (approve/reject the app), notifications,
+enforcement and routing evaluation are **out of scope**.
 
 ---
 
@@ -31,46 +33,60 @@ enforcement are **out of scope** and belong to a later downstream layer.
 submissions.json ──────────┐
 prompts/system_prompt.md ──┼──► invoke_llm.py ──► OpenAI (gpt-4.1-mini, strict JSON schema)
 prompts/user_prompt.md ────┘          │
-                                      │ validates: exactly 3 checks, no duplicates
-                                      │ saves only if ALL submissions succeed
                                       ▼
-                         runs/<timestamp>/predictions.json
-                                      │
-routing_config.json ──────► routing_engine.py runs/<timestamp>/predictions.json
-                                      │
-                                      ├──► runs/<timestamp>/routing_results.json
-                                      └──► runs/<timestamp>/routing_config_used.json
+                         runs/<run_id>/predictions.json
+                           │                        │
+routing_config.json ───────┼──► routing_engine.py   │
+     (permissions)         │        ├──► routing_results.json
+                           │        └──► routing_config_used.json
+                           │                        │
+routing_config.json ───────┴──► main.py ◄───────────┘
+     (check names only)          ▲   ├──► eval_results.json
+golden_dataset.json ─────────────┘   └──► golden_dataset_used.json
 ```
+
+Routing and evaluation both read `predictions.json` independently.
+Neither depends on the other's output.
 
 ### How the active components connect
 
 | Component | Reads | Produces | Connects to |
 |---|---|---|---|
-| `submissions.json` | — | List of apps (`submission_id`, `app_name`, `description`) | Input to `invoke_llm.py` |
-| `prompts/system_prompt.md` | — | The policy definitions (the three checks and PASS/FAIL rules) | Sent to the LLM as instructions by `invoke_llm.py` |
-| `prompts/user_prompt.md` | — | Template with `{app_name}` and `{description}` placeholders | Filled in per app by `invoke_llm.py` |
-| `invoke_llm.py` | The three files above | `runs/<timestamp>/predictions.json` | Calls OpenAI once per app. A strict JSON schema forces the exact check names and verdict values. Output feeds `routing_engine.py`. |
-| `routing_config.json` | — | Per-check `auto_approve` / `auto_reject` permissions | Read by `routing_engine.py`. Its keys define the set of expected checks. |
-| `routing_engine.py` | A `predictions.json` + `routing_config.json` | `routing_results.json` + `routing_config_used.json` in the same run folder | Final stage of the current pipeline. Output is the input for the future M05 layer. |
-| `test_routing.py` | Imports `route_check`, `route_submission` | Pass/fail report | Unit-tests `routing_engine.py` with its own inline config (independent of `routing_config.json`). |
+| `submissions.json` | — | Apps (`submission_id`, `app_name`, `description`) | Input to `invoke_llm.py` |
+| `prompts/system_prompt.md` | — | Policy definitions (3 checks, PASS/FAIL rules) | LLM instructions in `invoke_llm.py` |
+| `prompts/user_prompt.md` | — | Template with `{app_name}`, `{description}` | Filled per app by `invoke_llm.py` |
+| `invoke_llm.py` | The three files above | `runs/<run_id>/predictions.json` | One OpenAI call per app. Strict schema enforces check names and verdict values. Saves only if all apps succeed. |
+| `routing_config.json` | — | Per-check `auto_approve` / `auto_reject` | Permissions → `routing_engine.py`. Keys = canonical check names for both routing and evaluation. |
+| `routing_engine.py` | `predictions.json`, `routing_config.json` | `routing_results.json`, `routing_config_used.json` | Per-check routing + submission `workflow_status`. Also provides `load_routing_config()` to `main.py`. |
+| `golden_dataset.json` | — | Hand-labelled expected verdict per check | Ground truth for `main.py` |
+| `main.py` | `predictions.json`, `golden_dataset.json`, check names from `routing_config.json` | `eval_results.json`, `golden_dataset_used.json` | Model evaluation. Does not use routing permissions or routing results. |
+| `test_routing.py` | `routing_engine` functions | Pass/fail | Unit tests with inline config |
+| `test_main.py` | `main` functions | Pass/fail | Unit + end-to-end tests with inline data and temp files |
 
 ### Routing rules (`routing_engine.py`)
 
-- `route_check()` — routes one check:
-  - `PASS` + `auto_approve` is exactly `true` → `AUTO_APPROVE`
-  - `FAIL` + `auto_reject` is exactly `true` → `AUTO_REJECT`
-  - anything else → `HUMAN_REVIEW`
-  - Unknown check name, invalid or non-string verdict, missing/non-boolean
-    config flag → always `HUMAN_REVIEW`.
-  - Justification is preserved but never affects routing.
-- `route_submission()` — routes all checks of one submission independently:
-  - Duplicate checks → `HUMAN_REVIEW` (`DUPLICATE_CHECK`).
-  - Expected checks that are missing → placeholder with `HUMAN_REVIEW` (`MISSING_CHECK`).
-  - Any check in `HUMAN_REVIEW` (or no checks at all) → `PENDING_HUMAN_REVIEW`,
-    otherwise `AUTOMATED_CHECKS_COMPLETE`.
-  - A single `AUTO_REJECT` never rejects the whole submission.
-- `main()` — loads config + predictions, fails loudly on bad input, writes results
-  and a snapshot of the config used.
+- `route_check()`: `PASS` + `auto_approve: true` → `AUTO_APPROVE`;
+  `FAIL` + `auto_reject: true` → `AUTO_REJECT`; anything else → `HUMAN_REVIEW`.
+  Unknown checks, invalid/non-string verdicts and missing/non-boolean flags
+  always → `HUMAN_REVIEW`. Justification never affects routing.
+- `route_submission()`: duplicates → `DUPLICATE_CHECK`, missing checks →
+  `MISSING_CHECK` placeholder. Any `HUMAN_REVIEW` (or no checks) →
+  `PENDING_HUMAN_REVIEW`, else `AUTOMATED_CHECKS_COMPLETE`.
+  One `AUTO_REJECT` never rejects the whole submission.
+
+### Evaluation workflow (`main.py`)
+
+1. **Load** predictions, golden dataset and check names.
+2. **Validate** both datasets: empty, missing fields, duplicate IDs,
+   missing/unknown/duplicate checks, invalid verdicts, missing prediction,
+   missing ground truth. Any error → exit 1, no files written.
+3. **Evaluate** every (submission_id, policy_check) pair.
+4. **Report** overall metrics; per check: raw counts, accuracy, PASS/FAIL
+   precision and recall, confusion matrix; list of mismatches with justification.
+5. **Save** `eval_results.json` and `golden_dataset_used.json` in the run folder.
+
+Undefined metrics (zero denominator) are `null` in JSON and `N/A` in the terminal.
+Metric definitions: see [README.md](README.md#metrics).
 
 ---
 
@@ -78,84 +94,95 @@ routing_config.json ──────► routing_engine.py runs/<timestamp>/pre
 
 | Field | Created by | Consumed by | Values |
 |---|---|---|---|
-| `submission_id` | `submissions.json` | Every stage; the join key across all files | e.g. `APP001` |
-| `policy_check` | LLM (enforced by JSON schema) | `routing_engine.py` (looked up in config) | `metadata_quality`, `real_money_gambling`, `child_safety` |
-| `verdict` | LLM | `routing_engine.py`; preserved unchanged in output | `PASS`, `FAIL` |
-| `justification` | LLM | Preserved unchanged in output | free text |
-| `routing_action` | `route_check()` | Per-check result | `AUTO_APPROVE`, `AUTO_REJECT`, `HUMAN_REVIEW` |
-| `result_source` | `route_check()` | Per-check result | `AI`, `PENDING_HUMAN` |
-| `routing_reason` | `route_check()` / `route_submission()` | Audit trail | `CONFIG_ALLOWS_AUTO_APPROVE`, `CONFIG_ALLOWS_AUTO_REJECT`, `CONFIG_REQUIRES_HUMAN`, `UNKNOWN_CHECK`, `INVALID_VERDICT`, `DUPLICATE_CHECK`, `MISSING_CHECK` |
-| `human_review_checks` | `route_submission()` | Reviewers / M05 | list of check names |
-| `workflow_status` | `route_submission()` | M05 layer | `PENDING_HUMAN_REVIEW`, `AUTOMATED_CHECKS_COMPLETE` |
+| `submission_id` | `submissions.json` | Every stage; join key | e.g. `APP001` |
+| `policy_check` | LLM (schema-enforced) | Routing, evaluation | `metadata_quality`, `real_money_gambling`, `child_safety` |
+| `verdict` | LLM | Routing; evaluation (as predicted verdict) | `PASS`, `FAIL` |
+| `justification` | LLM | Preserved in routing output; shown in eval mismatches | free text |
+| `expected_checks` | `golden_dataset.json` (human labels) | Evaluation | `{policy_check: "PASS" \| "FAIL"}` |
+| `routing_action` | `route_check()` | Routing output | `AUTO_APPROVE`, `AUTO_REJECT`, `HUMAN_REVIEW` |
+| `result_source` | `route_check()` | Routing output | `AI`, `PENDING_HUMAN` |
+| `routing_reason` | Routing | Audit trail | `CONFIG_ALLOWS_AUTO_APPROVE`, `CONFIG_ALLOWS_AUTO_REJECT`, `CONFIG_REQUIRES_HUMAN`, `UNKNOWN_CHECK`, `INVALID_VERDICT`, `DUPLICATE_CHECK`, `MISSING_CHECK` |
+| `human_review_checks` | `route_submission()` | Reviewers | list of check names |
+| `workflow_status` | `route_submission()` | Downstream layer | `PENDING_HUMAN_REVIEW`, `AUTOMATED_CHECKS_COMPLETE` |
 
-**Important:** the three policy check names must stay identical in three places:
-`prompts/system_prompt.md`, the JSON schema in `invoke_llm.py`, and the keys of
-`routing_config.json`.
+**Policy check names must match in four places:** `prompts/system_prompt.md`,
+the JSON schema in `invoke_llm.py`, the keys of `routing_config.json`, and the
+`expected_checks` keys in `golden_dataset.json`.
 
-### Example routed submission
+### Golden dataset format
 
 ```json
-{
-  "submission_id": "APP002",
-  "workflow_status": "PENDING_HUMAN_REVIEW",
-  "human_review_checks": ["real_money_gambling"],
-  "checks": [
-    {
-      "policy_check": "real_money_gambling",
-      "verdict": "FAIL",
-      "justification": "The description states users can deposit real money ...",
-      "routing_action": "HUMAN_REVIEW",
-      "result_source": "PENDING_HUMAN",
-      "routing_reason": "CONFIG_REQUIRES_HUMAN"
+[
+  {
+    "submission_id": "APP002",
+    "expected_checks": {
+      "metadata_quality": "PASS",
+      "real_money_gambling": "FAIL",
+      "child_safety": "PASS"
     }
-  ]
-}
+  }
+]
 ```
-(Other two checks omitted for brevity.)
+
+### `eval_results.json` structure
+
+```text
+predictions_file, golden_dataset_file, policy_checks
+overall:    total_evaluated_pairs, correct_predictions, mismatches, accuracy
+per_check:  {check: total_evaluated, actual_pass, actual_fail,
+                    predicted_pass, predicted_fail, accuracy,
+                    pass_precision, pass_recall, fail_precision, fail_recall,
+                    confusion_matrix: {expected_PASS|FAIL: {predicted_PASS|FAIL: n}}}
+mismatches: [{submission_id, policy_check, expected_verdict,
+              predicted_verdict, justification}]
+```
 
 ---
 
 ## 4. Execution
 
-Run from the project root.
-
 ```bash
-# One-time setup
-python3.13 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
 
-# LLM inference — makes paid OpenAI API calls.
-# OPENAI_API_KEY must be exported in the shell (the code does not load .env itself).
-python invoke_llm.py
-
-# Routing on existing predictions — no API calls
-python routing_engine.py runs/2026-11-15_15-36-16/predictions.json
-
-# Routing unit tests — no API calls
-python test_routing.py
+python invoke_llm.py                                                            # paid API calls
+python routing_engine.py runs/2026-11-15_15-36-16/predictions.json              # no API calls
+python main.py runs/2026-11-15_15-36-16/predictions.json golden_dataset.json    # no API calls
+python test_routing.py                                                          # no API calls
+python test_main.py                                                             # no API calls
 ```
+
+`OPENAI_API_KEY` must be exported in the shell; the code does not load `.env`.
 
 ---
 
-## 5. Verified M04 results
+## 5. Verified results
 
-**Unit tests:** `test_routing.py` — 17 / 17 passed.
+### M04 — routing (run `2026-11-15_15-36-16`)
 
-**End-to-end run:** `runs/2026-11-15_15-36-16/` (committed as the reference run).
-
-Config used: all three checks `auto_approve: true`, `auto_reject: false`.
+Config: all checks `auto_approve: true`, `auto_reject: false`.
 
 | Submission | Workflow status | Human review checks |
 |---|---|---|
 | APP001 | `AUTOMATED_CHECKS_COMPLETE` | — |
-| APP002 | `PENDING_HUMAN_REVIEW` | `real_money_gambling` (FAIL, auto-reject not allowed) |
+| APP002 | `PENDING_HUMAN_REVIEW` | `real_money_gambling` |
 | APP003 | `AUTOMATED_CHECKS_COMPLETE` | — |
 
-Totals: **8** `AUTO_APPROVE`, **0** `AUTO_REJECT`, **1** `HUMAN_REVIEW`.
+Totals: 8 `AUTO_APPROVE`, 0 `AUTO_REJECT`, 1 `HUMAN_REVIEW`.
 
-Also verified: all original verdicts and justifications preserved, no missing
-or duplicate checks, and `routing_config_used.json` matches the config in use.
+### M05 — model evaluation (same run, `golden_dataset.json`)
+
+Overall: 9 pairs, 9 correct, 0 mismatches, accuracy 100%.
+
+| Check | Actual P/F | Predicted P/F | Accuracy | PASS prec / rec | FAIL prec / rec |
+|---|---|---|---|---|---|
+| metadata_quality | 3 / 0 | 3 / 0 | 100% | 100% / 100% | N/A / N/A |
+| real_money_gambling | 2 / 1 | 2 / 1 | 100% | 100% / 100% | 100% / 100% |
+| child_safety | 3 / 0 | 3 / 0 | 100% | 100% / 100% | N/A / N/A |
+
+### Tests
+
+- `test_routing.py`: 17 tests
+- `test_main.py`: 15 tests
 
 ---
 
@@ -167,50 +194,51 @@ or duplicate checks, and `routing_config_used.json` matches the config in use.
 |---|---|
 | `invoke_llm.py` | LLM inference |
 | `routing_engine.py` | Check routing + submission workflow |
-| `test_routing.py` | Routing unit tests |
-| `routing_config.json` | Routing permissions |
-| `prompts/system_prompt.md`, `prompts/user_prompt.md` | LLM prompts |
+| `main.py` | Check-level model evaluator |
+| `test_routing.py`, `test_main.py` | Unit tests |
+| `routing_config.json` | Routing permissions + canonical check names |
+| `golden_dataset.json` | Check-level ground truth (9 labels) |
 | `submissions.json` | Input submissions |
+| `prompts/system_prompt.md`, `prompts/user_prompt.md` | LLM prompts |
 | `requirements.txt` | Python dependencies |
-| `runs/2026-11-15_15-36-16/*.json` | Verified M04 reference artifacts |
+| `README.md`, `PROJECT_SNAPSHOT.md` | Documentation |
+| `runs/2026-11-15_15-36-16/{predictions, routing_results, routing_config_used}.json` | Committed M04 reference artifacts |
 
-### Legacy (kept unchanged; from the earlier single-verdict design)
-
-These use the old format of one `approved`/`rejected` verdict per submission
-and are **not compatible** with the current multi-check pipeline.
+### Legacy (kept unchanged)
 
 | File | Notes |
 |---|---|
-| `main.py` | Evaluator: accuracy / precision / recall vs. golden dataset |
-| `golden_dataset.json` | Old ground truth (`expected_verdict`) |
-| `model_predictions.json` | Old prediction sample |
-| `test_predictions.json`, `test_predictions_empty.json` | Test data for `main.py` |
-| `test_golden_duplicates.json`, `test_golden_empty.json`, `test_golden_invalid.json` | Test data for `main.py` |
-| `test_invoke_llm.py` | **Stale:** mocks old response shape; would now fail. Creates a run folder. |
-| `test_api_failure.py` | **Stale:** mocks old response shape. Creates a run folder. |
-| `README.md` | Describes only `main.py` |
+| `test_invoke_llm.py` | **Stale:** mocks the old single-verdict response shape; would now fail. Creates a run folder. |
+| `test_api_failure.py` | **Stale:** mocks the old response shape. Creates a run folder. |
+
+### Removed in M05
+
+`model_predictions.json`, `test_predictions.json`, `test_predictions_empty.json`,
+`test_golden_duplicates.json`, `test_golden_empty.json`, `test_golden_invalid.json`:
+old single-verdict fixtures, unreferenced by any code or test, replaced by inline
+test data in `test_main.py`. Recoverable from commit `185a171`.
 
 ### Not committed (see `.gitignore`)
 
-`.env` (API key), `.venv/`, `__pycache__/`, `.pytest_cache/`, `.DS_Store`,
-and all run folders/files except the three reference artifacts.
+`.env`, `.venv/`, `__pycache__/`, `.pytest_cache/`, `.DS_Store`, and all run
+files except the three M04 reference artifacts. This includes generated
+`eval_results.json` and `golden_dataset_used.json`.
 
 ---
 
 ## 7. Known limitations
 
-1. **No evaluation of the multi-check pipeline.** `main.py` and the golden
-   dataset still use the old single-verdict format.
-2. **Stale tests.** `test_invoke_llm.py` and `test_api_failure.py` mock the old
-   response shape and need updating before reuse.
-3. **Empty run folders.** `invoke_llm.py` creates the run folder before any API
-   call, so failed runs leave empty folders behind.
-4. **Re-routing overwrites.** Running `routing_engine.py` on the same run again
-   overwrites `routing_results.json` and `routing_config_used.json`.
-5. **`.env` is not loaded automatically.** `OPENAI_API_KEY` must be exported in
-   the shell.
-6. **Unnamed checks.** A check with no `policy_check` name is safely routed to
-   human review, but appears as `null` in `human_review_checks`.
-7. **README is outdated.** It documents only the legacy evaluator.
-8. **Out of scope until later milestones:** final dispositions, developer
-   notifications, enforcement.
+1. **Tiny golden dataset.** 9 labels, only 1 FAIL. FAIL precision/recall are
+   undefined for `metadata_quality` and `child_safety` and rest on one example
+   for `real_money_gambling`. 100% accuracy is weak evidence.
+2. **Duplicate golden keys are undetectable.** Python's JSON parser keeps the
+   last value if a check name appears twice inside `expected_checks`.
+3. **Overwrites on re-run.** Routing and evaluation overwrite their output files
+   in the run folder.
+4. **Stale inference tests.** `test_invoke_llm.py` and `test_api_failure.py`
+   need updating before reuse.
+5. **Empty run folders.** `invoke_llm.py` creates the run folder before any API
+   call; failed runs leave empty folders.
+6. **`.env` is not loaded automatically.** Export `OPENAI_API_KEY` in the shell.
+7. **Unnamed checks** in routing appear as `null` in `human_review_checks`.
+8. **Out of scope:** final dispositions, notifications, enforcement, routing evaluation.
