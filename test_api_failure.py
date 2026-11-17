@@ -1,29 +1,58 @@
+"""All-or-nothing behavior when one API call fails (fake client, no paid calls).
+
+Run with:  python test_api_failure.py   (or: pytest test_api_failure.py)
+
+Scenario: the 3rd submission's API call raises. Expected:
+- the pipeline exits with code 1
+- exactly one new run folder is created
+- no predictions.json is saved in it
+"""
+
+import json
+import tempfile
 from pathlib import Path
-import runpy
-from unittest.mock import patch, MagicMock
+from types import SimpleNamespace
 
-mock_response = MagicMock()
-mock_response.output_text = '{"verdict": "approved", "justification": "Mock success"}'
-api_results = [
-    mock_response,
-    mock_response,
-    RuntimeError("Simulated API failure")
-]
-runs_before = set(Path("runs").iterdir())
-with patch("openai.OpenAI") as MockOpenAI:
-    mock_client = MockOpenAI.return_value
-    mock_client.responses.create.side_effect = api_results
-    try:
-        pipeline_vars = runpy.run_path("invoke_llm.py")
-    except SystemExit as error:
-        assert error.code == 1
-        print("Pipeline exit code:", error.code)
+from invoke_llm import POLICY_CHECKS, main
 
-runs_after = set(Path("runs").iterdir())
-new_runs = runs_after - runs_before
-assert len(new_runs) == 1
-print("PASS: Exactly one new run directory was created")
-new_run_dir = new_runs.pop()
-predictions_path = new_run_dir / "predictions.json"
-assert not predictions_path.exists()
-print("PASS: No predictions.json saved after API failure")
+
+class FakeClient:
+    def __init__(self, results):
+        self.responses = self
+        self._results = list(results)
+        self.calls = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        result = self._results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+def ok():
+    checks = [{"policy_check": name, "verdict": "PASS", "justification": "Mock success"}
+              for name in POLICY_CHECKS]
+    return SimpleNamespace(output_text=json.dumps({"checks": checks}))
+
+
+def test_api_failure_saves_nothing_and_exits_1():
+    client = FakeClient([ok(), ok(), RuntimeError("Simulated API failure")])
+
+    with tempfile.TemporaryDirectory() as tmp:
+        runs_root = Path(tmp)
+        try:
+            main(client=client, runs_root=runs_root)
+            raise AssertionError("expected SystemExit")
+        except SystemExit as error:
+            assert error.code == 1
+
+        new_runs = list(runs_root.iterdir())
+        assert len(new_runs) == 1, new_runs
+        assert not (new_runs[0] / "predictions.json").exists()
+        assert len(client.calls) == 3
+
+
+if __name__ == "__main__":
+    test_api_failure_saves_nothing_and_exits_1()
+    print("PASS test_api_failure_saves_nothing_and_exits_1")
