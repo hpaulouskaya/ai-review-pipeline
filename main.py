@@ -1,4 +1,4 @@
-"""Check-level model evaluator (M05).
+"""Check-level model evaluator with abstention-aware metrics (M05, M06.2).
 
 Compares model predictions against the golden dataset for every
 (submission_id, policy_check) pair.
@@ -9,10 +9,14 @@ Usage:
 Workflow: LOAD -> VALIDATE -> (stop on errors) -> EVALUATE -> REPORT -> SAVE
 
 Writes into the predictions' run folder:
-    eval_results.json         metrics + mismatches (undefined metrics are null)
+    eval_results.json         metrics, mismatches, abstentions (undefined metrics are null)
     golden_dataset_used.json  snapshot of the golden dataset used
 
-Scope: evaluates the MODEL's PASS/FAIL verdicts only.
+Golden labels are PASS/FAIL. Predictions may also be UNDECIDED, which is an
+abstention: never counted as correct, never counted as a mismatch, and never
+converted to PASS or FAIL.
+
+Scope: evaluates the MODEL's PASS/FAIL/UNDECIDED predictions only.
 Routing is not evaluated here. routing_config.json is read only as the
 source of truth for the expected policy check names.
 """
@@ -23,7 +27,9 @@ from pathlib import Path
 
 from routing_engine import load_routing_config
 
-VERDICTS = ("PASS", "FAIL")
+VERDICTS = ("PASS", "FAIL")                          # allowed golden labels
+UNDECIDED = "UNDECIDED"
+PREDICTION_VERDICTS = VERDICTS + (UNDECIDED,)        # allowed model predictions
 EVAL_OUTPUT_FILENAME = "eval_results.json"
 GOLDEN_SNAPSHOT_FILENAME = "golden_dataset_used.json"
 
@@ -41,8 +47,8 @@ def load_json(path):
 
 # ------------------------------------------------------------ VALIDATE
 
-def _is_valid_verdict(verdict):
-    return isinstance(verdict, str) and verdict in VERDICTS
+def _is_valid_verdict(verdict, allowed=VERDICTS):
+    return isinstance(verdict, str) and verdict in allowed
 
 
 def _index_by_submission_id(records, label, errors):
@@ -100,7 +106,7 @@ def validate_predictions(predictions, expected_checks, errors):
                 continue
             names.append(name)
             verdict = check["verdict"]
-            if not _is_valid_verdict(verdict):
+            if not _is_valid_verdict(verdict, PREDICTION_VERDICTS):
                 errors.append(f"{label} {submission_id}/{name}: INVALID verdict {verdict!r}")
             normalized[submission_id][name] = {
                 "verdict": verdict,
@@ -159,22 +165,54 @@ def ratio(numerator, denominator):
 
 
 def _empty_confusion_matrix():
-    # Outer key = expected (actual) verdict, inner key = predicted verdict.
-    return {f"expected_{e}": {f"predicted_{p}": 0 for p in VERDICTS} for e in VERDICTS}
+    # 2x3: outer key = expected (golden) PASS/FAIL,
+    #      inner key = predicted PASS/FAIL/UNDECIDED.
+    return {f"expected_{e}": {f"predicted_{p}": 0 for p in PREDICTION_VERDICTS}
+            for e in VERDICTS}
+
+
+def decision_summary(correct, abstentions, total):
+    """Abstention-aware counts and rates.
+
+    accuracy           = correct / total            (abstentions are not correct)
+    decision_accuracy  = correct / decided          (decided = total - abstentions)
+    decision_coverage  = decided / total
+    undecided_rate     = abstentions / total
+    """
+    decided = total - abstentions
+    return {
+        "correct_decisions": correct,
+        "incorrect_decisions": decided - correct,
+        "abstentions": abstentions,
+        "accuracy": ratio(correct, total),
+        "decision_accuracy": ratio(correct, decided),
+        "decision_coverage": ratio(decided, total),
+        "undecided_rate": ratio(abstentions, total),
+    }
 
 
 def check_metrics(confusion_matrix):
-    """Accuracy and PASS/FAIL precision/recall from raw confusion-matrix counts."""
-    pass_pass = confusion_matrix["expected_PASS"]["predicted_PASS"]
-    pass_fail = confusion_matrix["expected_PASS"]["predicted_FAIL"]
-    fail_pass = confusion_matrix["expected_FAIL"]["predicted_PASS"]
-    fail_fail = confusion_matrix["expected_FAIL"]["predicted_FAIL"]
+    """Metrics for one policy check from raw 2x3 confusion-matrix counts.
 
-    total = pass_pass + pass_fail + fail_pass + fail_fail
-    actual_pass = pass_pass + pass_fail
-    actual_fail = fail_pass + fail_fail
+    Precision: correct X / predicted X   (UNDECIDED is not a predicted PASS or FAIL)
+    Recall:    correct X / ALL actual X  (an abstention on an actual X counts as
+                                          not recalled; formula unchanged from 2-class)
+    """
+    expected_pass = confusion_matrix["expected_PASS"]
+    expected_fail = confusion_matrix["expected_FAIL"]
+
+    pass_pass = expected_pass["predicted_PASS"]
+    pass_fail = expected_pass["predicted_FAIL"]
+    pass_undecided = expected_pass["predicted_UNDECIDED"]
+    fail_pass = expected_fail["predicted_PASS"]
+    fail_fail = expected_fail["predicted_FAIL"]
+    fail_undecided = expected_fail["predicted_UNDECIDED"]
+
+    actual_pass = pass_pass + pass_fail + pass_undecided
+    actual_fail = fail_pass + fail_fail + fail_undecided
     predicted_pass = pass_pass + fail_pass
     predicted_fail = pass_fail + fail_fail
+    total = actual_pass + actual_fail
 
     return {
         "total_evaluated": total,
@@ -182,7 +220,7 @@ def check_metrics(confusion_matrix):
         "actual_fail": actual_fail,
         "predicted_pass": predicted_pass,
         "predicted_fail": predicted_fail,
-        "accuracy": ratio(pass_pass + fail_fail, total),
+        **decision_summary(pass_pass + fail_fail, pass_undecided + fail_undecided, total),
         "pass_precision": ratio(pass_pass, predicted_pass),
         "pass_recall": ratio(pass_pass, actual_pass),
         "fail_precision": ratio(fail_fail, predicted_fail),
@@ -194,7 +232,8 @@ def check_metrics(confusion_matrix):
 def evaluate(prediction_map, golden_map, expected_checks):
     """Compare every (submission_id, policy_check) pair. Inputs must be validated."""
     confusion = {name: _empty_confusion_matrix() for name in expected_checks}
-    mismatches = []
+    mismatches = []    # wrong PASS/FAIL decisions
+    abstentions = []   # UNDECIDED predictions (kept separate, never "wrong" or "right")
     correct = 0
 
     for submission_id in golden_map:
@@ -205,27 +244,33 @@ def evaluate(prediction_map, golden_map, expected_checks):
 
             confusion[name][f"expected_{expected}"][f"predicted_{predicted}"] += 1
 
-            if expected == predicted:
+            record = {
+                "submission_id": submission_id,
+                "policy_check": name,
+                "expected_verdict": expected,
+                "predicted_verdict": predicted,
+                "justification": prediction["justification"],
+            }
+            if predicted == UNDECIDED:
+                abstentions.append(record)
+            elif expected == predicted:
                 correct += 1
             else:
-                mismatches.append({
-                    "submission_id": submission_id,
-                    "policy_check": name,
-                    "expected_verdict": expected,
-                    "predicted_verdict": predicted,
-                    "justification": prediction["justification"],
-                })
+                mismatches.append(record)
 
     total = len(golden_map) * len(expected_checks)
+    summary = decision_summary(correct, len(abstentions), total)
     return {
         "overall": {
             "total_evaluated_pairs": total,
+            # Kept for backward compatibility; equal to correct_decisions / incorrect_decisions.
             "correct_predictions": correct,
-            "mismatches": total - correct,
-            "accuracy": ratio(correct, total),
+            "mismatches": summary["incorrect_decisions"],
+            **summary,
         },
         "per_check": {name: check_metrics(confusion[name]) for name in expected_checks},
         "mismatches": mismatches,
+        "abstentions": abstentions,
     }
 
 
@@ -240,33 +285,50 @@ def print_report(results):
     overall = results["overall"]
     print("\n=== OVERALL ===")
     print("Total evaluated pairs:", overall["total_evaluated_pairs"])
-    print("Correct predictions:", overall["correct_predictions"])
-    print("Mismatches:", overall["mismatches"])
-    print("Accuracy:", fmt(overall["accuracy"]))
+    print("Correct decisions:", overall["correct_decisions"])
+    print("Incorrect decisions (mismatches):", overall["incorrect_decisions"])
+    print("Abstentions (UNDECIDED):", overall["abstentions"])
+    _print_rates(overall)
 
     for name, m in results["per_check"].items():
         cm = m["confusion_matrix"]
         print(f"\n=== {name} ===")
         print(f"Total: {m['total_evaluated']}  "
               f"Actual PASS/FAIL: {m['actual_pass']}/{m['actual_fail']}  "
-              f"Predicted PASS/FAIL: {m['predicted_pass']}/{m['predicted_fail']}")
-        print("Accuracy:", fmt(m["accuracy"]))
+              f"Predicted PASS/FAIL/UNDECIDED: "
+              f"{m['predicted_pass']}/{m['predicted_fail']}/{m['abstentions']}")
+        print(f"Correct: {m['correct_decisions']}  Incorrect: {m['incorrect_decisions']}  "
+              f"Abstentions: {m['abstentions']}")
+        _print_rates(m)
         print(f"PASS precision: {fmt(m['pass_precision'])}  PASS recall: {fmt(m['pass_recall'])}")
         print(f"FAIL precision: {fmt(m['fail_precision'])}  FAIL recall: {fmt(m['fail_recall'])}")
         print("Confusion matrix (rows = expected, cols = predicted):")
-        print("               pred PASS  pred FAIL")
+        print("               pred PASS  pred FAIL  pred UNDECIDED")
         for expected in VERDICTS:
             row = cm[f"expected_{expected}"]
-            print(f"  exp {expected:<4}    {row['predicted_PASS']:>9}  {row['predicted_FAIL']:>9}")
+            print(f"  exp {expected:<4}    {row['predicted_PASS']:>9}  {row['predicted_FAIL']:>9}"
+                  f"  {row['predicted_UNDECIDED']:>14}")
 
-    print("\n=== MISMATCHES ===")
-    if not results["mismatches"]:
+    _print_records("MISMATCHES (incorrect decisions)", results["mismatches"])
+    _print_records("ABSTENTIONS (UNDECIDED, routed to human review)", results["abstentions"])
+
+
+def _print_rates(m):
+    print(f"Accuracy: {fmt(m['accuracy'])}  "
+          f"Decision accuracy: {fmt(m['decision_accuracy'])}  "
+          f"Coverage: {fmt(m['decision_coverage'])}  "
+          f"UNDECIDED rate: {fmt(m['undecided_rate'])}")
+
+
+def _print_records(title, records):
+    print(f"\n=== {title} ===")
+    if not records:
         print("None")
-    for mismatch in results["mismatches"]:
-        print(f"{mismatch['submission_id']}/{mismatch['policy_check']}: "
-              f"expected {mismatch['expected_verdict']}, "
-              f"predicted {mismatch['predicted_verdict']}")
-        print("  Justification:", mismatch["justification"])
+    for record in records:
+        print(f"{record['submission_id']}/{record['policy_check']}: "
+              f"expected {record['expected_verdict']}, "
+              f"predicted {record['predicted_verdict']}")
+        print("  Justification:", record["justification"])
 
 
 # ---------------------------------------------------------------- MAIN

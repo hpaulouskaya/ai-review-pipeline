@@ -38,7 +38,7 @@ def build_schema():
                     "type": "object",
                     "properties": {
                         "policy_check": {"type": "string", "enum": list(POLICY_CHECKS)},
-                        "verdict": {"type": "string", "enum": ["PASS", "FAIL"]},
+                        "verdict": {"type": "string", "enum": ["PASS", "FAIL", "UNDECIDED"]},
                         "justification": {"type": "string"},
                     },
                     "required": ["policy_check", "verdict", "justification"],
@@ -146,7 +146,11 @@ def main(client=None, runs_root=RUNS_ROOT):
     """CLI entry point. Creates the real OpenAI client unless one is injected."""
     if client is None:
         # Imported here so importing this module does not require or touch the SDK.
+        from dotenv import load_dotenv
         from openai import OpenAI
+        # Load OPENAI_API_KEY from the project's .env (git-ignored).
+        # Variables already set in the shell take precedence.
+        load_dotenv(Path(__file__).parent / ".env")
         client = OpenAI()
 
     run_dir = create_run_dir(runs_root)

@@ -17,7 +17,7 @@ from pathlib import Path
 DEFAULT_CONFIG_PATH = Path(__file__).parent / "routing_config.json"
 ROUTING_OUTPUT_FILENAME = "routing_results.json"
 CONFIG_SNAPSHOT_FILENAME = "routing_config_used.json"
-VALID_VERDICTS = {"PASS", "FAIL"}
+VALID_VERDICTS = {"PASS", "FAIL", "UNDECIDED"}
 
 
 def load_routing_config(path=DEFAULT_CONFIG_PATH):
@@ -47,7 +47,8 @@ def route_check(check, routing_config):
     """Route a single policy check to AUTO_APPROVE, AUTO_REJECT or HUMAN_REVIEW.
 
     Anything unexpected (unknown check, invalid verdict, missing or non-boolean
-    config flag) falls through to HUMAN_REVIEW. Justification is preserved
+    config flag) falls through to HUMAN_REVIEW. An UNDECIDED verdict always
+    goes to HUMAN_REVIEW, regardless of config. Justification is preserved
     but never affects routing.
     """
     if not isinstance(check, dict):
@@ -64,6 +65,12 @@ def route_check(check, routing_config):
     if not isinstance(verdict, str) or verdict not in VALID_VERDICTS:
         return _routed_check(policy_check, verdict, justification,
                              "HUMAN_REVIEW", "INVALID_VERDICT")
+
+    # The model could not reach a justified decision: a human must decide.
+    # Checked before the config, so no permission can automate it.
+    if verdict == "UNDECIDED":
+        return _routed_check(policy_check, verdict, justification,
+                             "HUMAN_REVIEW", "MODEL_UNDECIDED")
 
     permissions = routing_config[policy_check]
     if not isinstance(permissions, dict):

@@ -79,8 +79,21 @@ def test_schema_is_strict_and_lists_policy_checks():
     item = schema["properties"]["checks"]["items"]
     assert schema["additionalProperties"] is False and item["additionalProperties"] is False
     assert item["properties"]["policy_check"]["enum"] == list(POLICY_CHECKS)
-    assert item["properties"]["verdict"]["enum"] == ["PASS", "FAIL"]
+    assert item["properties"]["verdict"]["enum"] == ["PASS", "FAIL", "UNDECIDED"]
     assert item["required"] == ["policy_check", "verdict", "justification"]
+
+
+def test_undecided_verdict_is_accepted_and_preserved():
+    expected = checks({"real_money_gambling": "UNDECIDED"})
+    expected[1]["justification"] = "Unclear whether coins can be cashed out."
+    client = FakeClient([response({"checks": expected})])
+
+    predictions = run_inference(client, APPS[:1], SYSTEM_PROMPT, TEMPLATE)
+
+    assert predictions == [{"submission_id": "A1", "checks": expected}]
+    gambling = predictions[0]["checks"][1]
+    assert gambling["verdict"] == "UNDECIDED"
+    assert gambling["justification"] == "Unclear whether coins can be cashed out."
 
 
 # --- review_submission ---

@@ -73,6 +73,40 @@ def test_non_string_verdicts_go_to_human():
         assert result["verdict"] == bad_verdict  # original value preserved
 
 
+def test_undecided_goes_to_human_even_with_auto_approve():
+    permissive = {"metadata_quality": {"auto_approve": True, "auto_reject": True}}
+    check = make_check("metadata_quality", "UNDECIDED", "Name and description conflict.")
+    result = route_check(check, permissive)
+    assert result["routing_action"] == "HUMAN_REVIEW"
+    assert result["result_source"] == "PENDING_HUMAN"
+    assert result["routing_reason"] == "MODEL_UNDECIDED"
+
+
+def test_undecided_is_not_invalid_verdict():
+    result = route_check(make_check("real_money_gambling", "UNDECIDED"), TEST_CONFIG)
+    assert result["routing_reason"] == "MODEL_UNDECIDED"
+    assert result["routing_reason"] != "INVALID_VERDICT"
+    # Exact-case only: other spellings remain invalid.
+    for spelling in ["undecided", "Undecided", "UNSURE"]:
+        result = route_check(make_check("real_money_gambling", spelling), TEST_CONFIG)
+        assert result["routing_reason"] == "INVALID_VERDICT", spelling
+
+
+def test_undecided_preserves_verdict_and_justification():
+    check = make_check("child_safety", "UNDECIDED", "Unclear if strangers can contact kids.")
+    result = route_check(check, TEST_CONFIG)
+    assert result["verdict"] == "UNDECIDED"
+    assert result["justification"] == "Unclear if strangers can contact kids."
+
+
+def test_undecided_makes_submission_pending():
+    checks = all_pass_checks()
+    checks[1] = make_check("real_money_gambling", "UNDECIDED")
+    result = route_submission({"submission_id": "APP010", "checks": checks}, TEST_CONFIG)
+    assert result["workflow_status"] == "PENDING_HUMAN_REVIEW"
+    assert result["human_review_checks"] == ["real_money_gambling"]
+
+
 def test_missing_config_flag_goes_to_human():
     config = {"metadata_quality": {}}
     result = route_check(make_check("metadata_quality", "PASS"), config)
