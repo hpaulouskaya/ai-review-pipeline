@@ -8,6 +8,10 @@ __pycache__/
 
 .DS_Store
 
+# Local Claude Code MCP registration: contains machine-specific absolute
+# paths. Committed template: .mcp.json.example
+.mcp.json
+
 # Generated run artifacts: ignore everything except the three
 # verified M04 reference artifacts listed below.
 runs/*

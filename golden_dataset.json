@@ -22,5 +22,13 @@
       "real_money_gambling": "PASS",
       "child_safety": "PASS"
     }
+  },
+  {
+    "submission_id": "SYN001",
+    "expected_checks": {
+      "metadata_quality": "PASS",
+      "real_money_gambling": "PASS",
+      "child_safety": "PASS"
+    }
   }
 ]

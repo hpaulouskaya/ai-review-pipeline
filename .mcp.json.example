@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "app-evidence": {
+      "type": "stdio",
+      "command": "/ABSOLUTE/PATH/TO/mini-eval-harness/.venv/bin/python",
+      "args": [
+        "/ABSOLUTE/PATH/TO/mini-eval-harness/mcp_evidence_server.py"
+      ],
+      "env": {}
+    }
+  }
+}

@@ -13,5 +13,10 @@
     "submission_id": "APP003",
     "app_name": "Daily Fitness Tracker",
     "description": "A fitness app that helps users track workouts, daily steps, and personal fitness goals."
+  },
+  {
+    "submission_id": "SYN001",
+    "app_name": "Daily Prize Wheel",
+    "description": "Spin the wheel once a day to win prizes and unlock bonus rounds."
   }
 ]

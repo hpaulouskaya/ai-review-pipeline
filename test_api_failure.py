@@ -37,7 +37,13 @@ def ok():
 
 
 def test_api_failure_saves_nothing_and_exits_1():
-    client = FakeClient([ok(), ok(), RuntimeError("Simulated API failure")])
+    with open("submissions.json") as file:
+        submission_count = len(json.load(file))
+    assert submission_count >= 3, "scenario needs at least 3 submissions"
+    # 3rd call fails; every other call succeeds, however many submissions exist.
+    results = [ok(), ok(), RuntimeError("Simulated API failure")]
+    results += [ok() for _ in range(submission_count - 3)]
+    client = FakeClient(results)
 
     with tempfile.TemporaryDirectory() as tmp:
         runs_root = Path(tmp)
@@ -50,7 +56,7 @@ def test_api_failure_saves_nothing_and_exits_1():
         new_runs = list(runs_root.iterdir())
         assert len(new_runs) == 1, new_runs
         assert not (new_runs[0] / "predictions.json").exists()
-        assert len(client.calls) == 3
+        assert len(client.calls) == submission_count   # remaining submissions still tried
 
 
 if __name__ == "__main__":
