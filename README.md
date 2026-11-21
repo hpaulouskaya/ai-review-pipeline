@@ -1,19 +1,41 @@
-# Mini Eval Harness
+# AI Review Pipeline
 
-A small Python pipeline for AI-assisted app review screening:
+A prototype of an AI-assisted application review workflow, built in Python on
+**synthetic data**. An LLM screens app submissions against policy checks,
+deterministic rules decide which results can be used automatically and which
+need a person, human decisions complete the review, and an evaluation harness
+measures the model against hand-labelled ground truth.
 
-1. **Inference** — an LLM screens each app submission against three
-   independent policy checks and returns `PASS`, `FAIL` or `UNDECIDED`
-   with a justification.
-2. **Routing** — each check is routed to `AUTO_APPROVE`, `AUTO_REJECT` or
-   `HUMAN_REVIEW` based on configurable permissions. `UNDECIDED` always
-   goes to human review.
-3. **Evaluation** — the model's verdicts are compared against a hand-labelled
-   golden dataset for every (submission, policy check) pair, with
-   `UNDECIDED` measured as an abstention.
-4. **Human review completion** — human `PASS`/`FAIL` decisions are applied to
-   the checks routed to `HUMAN_REVIEW`, producing a check-level completion
-   record without changing any earlier artifact.
+(Earlier milestones used the working name *Mini Eval Harness*.)
+
+The four main components:
+
+1. **LLM policy-check predictions** (`invoke_llm.py`): the model screens each
+   submission against three independent policy checks and returns a
+   structured (JSON-schema) `PASS`, `FAIL` or `UNDECIDED` verdict with a
+   justification for each.
+2. **Deterministic routing** (`routing_engine.py`): each check is routed to
+   `AUTO_APPROVE`, `AUTO_REJECT` or `HUMAN_REVIEW` by fixed rules and the
+   permissions in `routing_config.json`. `UNDECIDED` always goes to human review.
+3. **Human review completion** (`human_review.py`): human `PASS`/`FAIL`
+   decisions are validated and applied to the checks routed to
+   `HUMAN_REVIEW`, producing a check-level completion record without changing
+   any earlier artifact.
+4. **Evaluation harness** (`main.py`): the model's verdicts are compared with
+   a hand-labelled golden dataset for every (submission, policy check) pair,
+   with `UNDECIDED` measured as an abstention.
+
+```text
+submissions.json ──► invoke_llm.py ──► runs/<run_id>/predictions.json
+   (OpenAI API; optional         │
+    MCP evidence with --evidence)├──► routing_engine.py ──► routing_results.json
+                                 │      (routing_config.json)       │
+                                 │                                  ▼
+                                 │     human_decisions.json ──► human_review.py ──► review_completion.json
+                                 │
+                                 └──► main.py ◄── golden_dataset.json
+                                          └──► eval_results.json
+```
 
 Policy checks: `metadata_quality`, `real_money_gambling`, `child_safety`.
 
@@ -33,15 +55,50 @@ For architecture, data contracts and project status, see
 
 ---
 
+## How This Was Built
+
+This project was developed through a human-directed, AI-assisted engineering
+workflow using Claude Code.
+
+My role included defining the problem and functional requirements, making and
+reviewing architectural decisions, specifying expected behavior and evaluation
+criteria, investigating implementation tradeoffs, and validating the system
+through iterative testing and review.
+
+Claude Code assisted with writing and refining the Python implementation,
+tests and documentation. Commits record this with a `Co-Authored-By` trailer.
+
+The project is also a hands-on engineering learning exercise. My focus has
+been on understanding how the components interact, reasoning about failure
+scenarios, evaluating reliability, and developing the ability to build and
+troubleshoot AI-powered systems independently.
+
+This is a portfolio prototype built with synthetic data. It is not a
+production deployment, and it was not developed using proprietary employer data.
+
+---
+
 ## Quick start: offline demo
 
 No API key, no network and no `pip install`: the demo uses only the Python
-standard library (developed with Python 3.13).
+standard library.
 
 ```bash
-git clone <this repository> && cd mini-eval-harness
-python3 demo.py
+# Placeholder: replace <REPOSITORY_URL> once the public repository exists.
+git clone <REPOSITORY_URL>
+cd <repository-folder>
 ```
+
+Then run the demo:
+
+| Platform | Command |
+|---|---|
+| macOS / Linux | `python3 demo.py` |
+| Windows | `py demo.py` (or `python demo.py`) |
+
+**Tested so far:** the offline demo was tested on macOS with Python 3.13. Its
+main execution path was also exercised on macOS with Python 3.9.6. It has
+**not** been tested on Windows or Linux, or with other Python versions.
 
 > **Recorded predictions, not live inference.** The demo starts from
 > [fixtures/demo_predictions.json](fixtures/demo_predictions.json), an
@@ -78,11 +135,22 @@ Review completion: 3/4 submissions resolved; pending human review: ['SYN001']
 
 ## Setup
 
-Requires Python 3.13.
+Needed only for live inference, evidence mode and the full test suite (the
+offline demo needs none of this). These have been tested only with
+**Python 3.13 on macOS**. Evidence mode uses `except*`, so it cannot run on
+Python versions older than 3.11.
 
 ```bash
+# macOS / Linux
 python3.13 -m venv .venv
 source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+```bat
+:: Windows (not tested)
+py -3.13 -m venv .venv
+.venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
@@ -111,8 +179,9 @@ placeholder paths. Claude Code asks you to approve project MCP servers on first 
 
 ## Commands
 
-Run from the project root, with the virtual environment active
-(`source .venv/bin/activate`) or by calling `.venv/bin/python` directly.
+Run from the project root, with the virtual environment active, or by calling
+the venv interpreter directly (`.venv/bin/python`; on Windows
+`.venv\Scripts\python`).
 
 ```bash
 # 1. Inference — makes paid OpenAI API calls (one per submission).
@@ -456,30 +525,41 @@ Written next to the predictions file, in `runs/<run_id>/`:
 Re-running the evaluator on the same run overwrites both files.
 These generated files are ignored by Git.
 
-### Example output (run `2026-11-17_22-00-12`, three-verdict prompt)
+### Example output (offline demo, step 2: 12 pairs, recorded M07.3 baseline)
+
+Excerpt from the offline demo's evaluation output; `metadata_quality` and
+`child_safety` are omitted:
 
 ```text
 === OVERALL ===
-Total evaluated pairs: 9
-Correct decisions: 9
+Total evaluated pairs: 12
+Correct decisions: 11
 Incorrect decisions (mismatches): 0
-Abstentions (UNDECIDED): 0
-Accuracy: 100.00%  Decision accuracy: 100.00%  Coverage: 100.00%  UNDECIDED rate: 0.00%
+Abstentions (UNDECIDED): 1
+Accuracy: 91.67%  Decision accuracy: 100.00%  Coverage: 91.67%  UNDECIDED rate: 8.33%
 
 === real_money_gambling ===
-Total: 3  Actual PASS/FAIL: 2/1  Predicted PASS/FAIL/UNDECIDED: 2/1/0
-Correct: 3  Incorrect: 0  Abstentions: 0
-Accuracy: 100.00%  Decision accuracy: 100.00%  Coverage: 100.00%  UNDECIDED rate: 0.00%
-PASS precision: 100.00%  PASS recall: 100.00%
+Total: 4  Actual PASS/FAIL: 3/1  Predicted PASS/FAIL/UNDECIDED: 2/1/1
+Correct: 3  Incorrect: 0  Abstentions: 1
+Accuracy: 75.00%  Decision accuracy: 100.00%  Coverage: 75.00%  UNDECIDED rate: 25.00%
+PASS precision: 100.00%  PASS recall: 66.67%
 FAIL precision: 100.00%  FAIL recall: 100.00%
 Confusion matrix (rows = expected, cols = predicted):
                pred PASS  pred FAIL  pred UNDECIDED
-  exp PASS            2          0               0
+  exp PASS            2          0               1
   exp FAIL            0          1               0
+
+=== ABSTENTIONS (UNDECIDED, routed to human review) ===
+SYN001/real_money_gambling: expected PASS, predicted UNDECIDED
+  Justification: The description mentions winning prizes but does not clarify whether the prizes involve real money or cash equivalents.
 ```
 
-`metadata_quality` and `child_safety` show `FAIL precision: N/A  FAIL recall: N/A`
-because neither the golden dataset nor the model has a FAIL for them.
+- **PASS recall is 66.67%** for `real_money_gambling`: the abstention on
+  SYN001, whose golden label is PASS, counts as not recalled. PASS precision
+  is unaffected.
+- **`metadata_quality` and `child_safety`** (4/4 correct each) show
+  `FAIL precision: N/A  FAIL recall: N/A`, because neither the golden dataset
+  nor the model has a FAIL for them.
 
 ---
 
@@ -510,6 +590,13 @@ production-ready**.
 - **No prompt snapshot.** Inference runs do not save the prompt they used.
 - **Separate steps.** Routing, evaluation and human review are separate
   commands; `demo.py` chains them only for the recorded demo.
+- **Stale downstream artifacts.** Re-running a single stage by hand in an
+  existing run folder overwrites only that stage's output. For example,
+  re-running `routing_engine.py` after a config change leaves the earlier
+  `review_completion.json` describing the old routing, with no warning
+  (`review_completion.json` records its input file paths, not their content).
+  The offline demo avoids this by creating a new `runs/demo_<timestamp>/`
+  folder on every run.
 - **The demo is a fixed recording.** It does not exercise inference or
   evidence retrieval, and live runs may give different verdicts.
 - **Human review is check-level only.** No application approval/rejection,

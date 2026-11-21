@@ -1,4 +1,8 @@
 .env
+# Local .env variants (.env.local, .env.production, ...). A committed
+# template, if one is ever added, must be named .env.example.
+.env.*
+!.env.example
 
 .venv/
 
@@ -11,6 +15,10 @@ __pycache__/
 # Local Claude Code MCP registration: contains machine-specific absolute
 # paths. Committed template: .mcp.json.example
 .mcp.json
+
+# Local Claude Code settings (permissions, machine-specific paths). Ignored
+# here so it does not depend on each developer's global Git configuration.
+.claude/settings.local.json
 
 # Generated run artifacts: ignore everything except the three
 # verified M04 reference artifacts listed below.
