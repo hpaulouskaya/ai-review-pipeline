@@ -84,9 +84,8 @@ No API key, no network and no `pip install`: the demo uses only the Python
 standard library.
 
 ```bash
-# Placeholder: replace <REPOSITORY_URL> once the public repository exists.
-git clone <REPOSITORY_URL>
-cd <repository-folder>
+git clone https://github.com/hpaulouskaya/ai-review-pipeline.git
+cd ai-review-pipeline
 ```
 
 Then run the demo:
