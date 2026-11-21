@@ -1,0 +1,10 @@
+[
+  {
+    "submission_id": "APP002",
+    "policy_check": "real_money_gambling",
+    "decision": "FAIL",
+    "reviewer": "synthetic-reviewer-01",
+    "rationale": "Synthetic example: description advertises real-money betting with cash prizes.",
+    "decided_at": "2026-11-20T10:00:00+00:00"
+  }
+]

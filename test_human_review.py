@@ -7,12 +7,19 @@ from inline predictions that mirror the M07.3 baseline run, so the fixtures
 have the exact shape of routing_results.json.
 """
 
+import contextlib
 import copy
+import io
+import json
+import tempfile
+from pathlib import Path
 
 from human_review import (
+    COMPLETION_OUTPUT_FILENAME,
     STATUS_PENDING,
     STATUS_RESOLVED,
     complete_submission,
+    main,
     validate_decisions,
 )
 from routing_engine import route_submission
@@ -313,6 +320,146 @@ def test_unvalidated_decision_for_non_human_check_raises():
             raise AssertionError("expected ValueError")
         except ValueError as error:
             assert "validate_decisions" in str(error)
+
+
+# --- CLI (M08.2): file input/output in a temporary run folder ---
+
+def make_run(tmp, routing_results, decisions, config=CONFIG):
+    """Write a run folder like the pipeline does; return (argv, run_dir)."""
+    run_dir = Path(tmp) / "run"
+    run_dir.mkdir()
+    (run_dir / "predictions.json").write_text('[{"untouched": true}]')
+    (run_dir / "routing_results.json").write_text(json.dumps(routing_results))
+    if config is not None:
+        (run_dir / "routing_config_used.json").write_text(json.dumps(config))
+    decisions_path = Path(tmp) / "human_decisions.json"
+    if decisions is not None:
+        decisions_path.write_text(json.dumps(decisions))
+    return ["human_review.py", str(run_dir / "routing_results.json"), str(decisions_path)], run_dir
+
+
+def run_cli(argv):
+    """Run main(); return (exit_code, stdout). exit_code is None on success."""
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        try:
+            main(argv)
+            return None, out.getvalue()
+        except SystemExit as error:
+            return error.code, out.getvalue()
+
+
+def test_cli_successful_completion_writes_output_and_keeps_inputs():
+    with tempfile.TemporaryDirectory() as tmp:
+        argv, run_dir = make_run(tmp, [APP001, APP002], [decision("APP002", value="FAIL")])
+        inputs_before = {name: (run_dir / name).read_bytes()
+                         for name in ("predictions.json", "routing_results.json")}
+
+        code, out = run_cli(argv)
+        assert code is None, out
+        saved = json.loads((run_dir / COMPLETION_OUTPUT_FILENAME).read_text())
+        assert saved["policy_checks"] == EXPECTED
+        assert saved["summary"] == {"total_submissions": 2, "checks_resolved": 2,
+                                    "pending_human_review": 0, "human_decisions_applied": 1}
+        app002 = saved["submissions"][1]
+        assert app002["completion_status"] == STATUS_RESOLVED
+        assert app002["checks"][1]["outcome_source"] == "HUMAN"
+        assert app002["checks"][1]["routing"] == APP002["checks"][1]
+        assert {name: (run_dir / name).read_bytes() for name in inputs_before} == inputs_before
+        assert sorted(p.name for p in run_dir.iterdir()) == sorted(
+            [*inputs_before, "routing_config_used.json", COMPLETION_OUTPUT_FILENAME])
+
+
+def test_cli_missing_decisions_leave_checks_pending():
+    with tempfile.TemporaryDirectory() as tmp:
+        argv, run_dir = make_run(tmp, [APP002, SYN001], [decision("SYN001", value="PASS")])
+        code, out = run_cli(argv)
+        assert code is None, out
+        saved = json.loads((run_dir / COMPLETION_OUTPUT_FILENAME).read_text())
+        statuses = {s["submission_id"]: s["completion_status"] for s in saved["submissions"]}
+        assert statuses == {"APP002": STATUS_PENDING, "SYN001": STATUS_RESOLVED}
+        assert saved["submissions"][0]["pending_checks"] == ["real_money_gambling"]
+        assert saved["summary"]["pending_human_review"] == 1
+
+        # An empty decisions file is valid too: everything needing a human stays pending.
+        (Path(tmp) / "human_decisions.json").write_text("[]")
+        assert run_cli(argv)[0] is None
+        saved = json.loads((run_dir / COMPLETION_OUTPUT_FILENAME).read_text())
+        assert saved["summary"]["checks_resolved"] == 0
+
+
+def test_cli_invalid_decision_exits_and_writes_nothing():
+    with tempfile.TemporaryDirectory() as tmp:
+        argv, run_dir = make_run(tmp, [APP001, APP002],
+                                 [decision("APP002", value="FAIL"),            # valid
+                                  decision("APP001", "metadata_quality"),      # AUTO_APPROVE
+                                  decision("APP002", value="UNDECIDED")])      # invalid value
+        code, out = run_cli(argv)
+        assert code == 1
+        assert "NOT_PENDING_HUMAN_REVIEW" in out and "INVALID_DECISION" in out
+        assert "Validation failed: 2 error(s)" in out
+        assert not (run_dir / COMPLETION_OUTPUT_FILENAME).exists()
+
+
+def test_cli_missing_or_malformed_input_file_exits_and_writes_nothing():
+    cases = {
+        "decisions": dict(decisions=None),
+        "config snapshot": dict(decisions=[], config=None),
+    }
+    for label, kwargs in cases.items():
+        with tempfile.TemporaryDirectory() as tmp:
+            argv, run_dir = make_run(tmp, [APP001], **kwargs)
+            code, out = run_cli(argv)
+            assert code == 1, label
+            assert out.startswith("ERROR: Could not load"), (label, out)
+            assert not (run_dir / COMPLETION_OUTPUT_FILENAME).exists()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        argv, run_dir = make_run(tmp, [APP001], [])
+        (Path(tmp) / "human_decisions.json").write_text("{not json")
+        code, out = run_cli(argv)
+        assert code == 1 and "ERROR: Could not load" in out
+        (Path(tmp) / "human_decisions.json").write_text("[]")
+        (run_dir / "routing_results.json").write_text("[]")       # empty routing results
+        code, out = run_cli(argv)
+        assert code == 1 and "routing_results: EMPTY or not a list" in out
+        assert not (run_dir / COMPLETION_OUTPUT_FILENAME).exists()
+
+    assert run_cli(["human_review.py"])[0] == 1                    # wrong argument count
+
+
+def test_cli_failure_preserves_existing_output_with_stale_warning():
+    with tempfile.TemporaryDirectory() as tmp:
+        argv, run_dir = make_run(tmp, [APP002], [decision("APP002", value="FAIL")])
+        assert run_cli(argv)[0] is None, "first run should succeed"
+        output = run_dir / COMPLETION_OUTPUT_FILENAME
+        previous = output.read_bytes()
+        decisions_path = Path(tmp) / "human_decisions.json"
+
+        decisions_path.write_text(json.dumps([decision("APP002", value="UNDECIDED")]))
+        code, out = run_cli(argv)                                   # validation failure
+        assert code == 1 and "was NOT updated and may contain stale results" in out
+        assert output.read_bytes() == previous
+
+        decisions_path.unlink()
+        code, out = run_cli(argv)                                   # loading failure
+        assert code == 1 and "ERROR: Could not load" in out
+        assert "was NOT updated and may contain stale results" in out
+        assert output.read_bytes() == previous
+
+    with tempfile.TemporaryDirectory() as tmp:                      # no prior output: no warning
+        argv, _ = make_run(tmp, [APP002], [decision("APP002", value="UNDECIDED")])
+        code, out = run_cli(argv)
+        assert code == 1 and "WARNING" not in out
+
+
+def test_example_decisions_file_is_valid_for_reference_run():
+    root = Path(__file__).parent
+    decisions = json.loads((root / "fixtures" / "example_human_decisions.json").read_text())
+    routing = json.loads((root / "runs" / "2026-11-15_15-36-16" / "routing_results.json").read_text())
+    errors = []
+    valid = validate_decisions(decisions, {r["submission_id"]: r for r in routing}, EXPECTED, errors)
+    assert errors == [] and list(valid) == [("APP002", "real_money_gambling")]
 
 
 if __name__ == "__main__":

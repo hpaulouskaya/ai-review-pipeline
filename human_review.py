@@ -1,8 +1,16 @@
-"""Human Review Completion: core logic (M08.1).
+"""Human Review Completion (M08.1 core logic, M08.2 CLI).
 
 Combines one submission's routing record (from routing_results.json) with
-validated human PASS/FAIL decisions into a derived completion record. Pure
-functions only: no file I/O, no CLI (deferred to M08.2).
+validated human PASS/FAIL decisions into a derived completion record.
+
+Usage:
+    python human_review.py runs/<run_id>/routing_results.json human_decisions.json
+
+Workflow: LOAD -> VALIDATE -> (stop on errors) -> COMPLETE -> REPORT -> SAVE
+Expected policy checks come from the run's routing_config_used.json snapshot.
+Writes review_completion.json into the run folder; no other file is written.
+Any validation error means nothing is written. Missing decisions are valid:
+those checks stay pending.
 
 Inputs are never modified. The original AI verdict, justification, routing
 action, routing reason and result_source are kept verbatim under "routing".
@@ -30,9 +38,17 @@ same way, even when the routing action is automated:
 """
 
 import copy
+import json
+import sys
 from datetime import datetime
+from pathlib import Path
 
 from main import VERDICTS   # ("PASS", "FAIL"): same values as golden labels
+from main import _index_by_submission_id, load_json
+from routing_engine import CONFIG_SNAPSHOT_FILENAME
+
+COMPLETION_OUTPUT_FILENAME = "review_completion.json"
+USAGE = "Usage: python human_review.py runs/<run_id>/routing_results.json human_decisions.json"
 
 HUMAN_RESOLVABLE_REASONS = frozenset({"MODEL_UNDECIDED", "CONFIG_REQUIRES_HUMAN"})
 AUTOMATED_OUTCOMES = {"AUTO_APPROVE": "PASS", "AUTO_REJECT": "FAIL"}
@@ -242,3 +258,108 @@ def complete_submission(routing_record, decisions_for_submission, expected_check
         "unresolved_anomalies": anomalies,
         "checks": checks,
     }
+
+
+# ------------------------------------------------------------------ CLI
+
+def build_completion(routing_results, decisions, routing_config, errors):
+    """Validate all loaded inputs and build the review_completion content.
+
+    Every problem is appended to errors. Returns None when there are errors,
+    so the caller writes nothing.
+    """
+    if not isinstance(routing_config, dict) or len(routing_config) == 0:
+        errors.append(f"{CONFIG_SNAPSHOT_FILENAME}: EMPTY or not an object")
+    if not isinstance(routing_results, list) or len(routing_results) == 0:
+        errors.append("routing_results: EMPTY or not a list")
+    if errors:
+        return None
+
+    expected_checks = list(routing_config)
+    routing_by_id = _index_by_submission_id(routing_results, "routing_results", errors)
+    valid = validate_decisions(decisions, routing_by_id, expected_checks, errors)
+    if errors:
+        return None
+
+    submissions = []
+    for submission_id, routing_record in routing_by_id.items():
+        mine = {check: d for (sid, check), d in valid.items() if sid == submission_id}
+        submissions.append(complete_submission(routing_record, mine, expected_checks))
+
+    resolved = sum(s["completion_status"] == STATUS_RESOLVED for s in submissions)
+    return {
+        "policy_checks": expected_checks,
+        "summary": {
+            "total_submissions": len(submissions),
+            "checks_resolved": resolved,
+            "pending_human_review": len(submissions) - resolved,
+            "human_decisions_applied": len(valid),
+        },
+        "submissions": submissions,
+    }
+
+
+def _exit_without_writing(output_path):
+    """Exit 1. An existing output is preserved, but flagged as possibly stale."""
+    if output_path.exists():
+        print(f"WARNING: existing {output_path} was NOT updated and may contain stale results.")
+    sys.exit(1)
+
+
+def main(argv=None):
+    argv = sys.argv if argv is None else argv
+    if len(argv) != 3:
+        print("ERROR: Incorrect number of arguments.")
+        print(USAGE)
+        sys.exit(1)
+
+    routing_path = Path(argv[1])
+    decisions_path = Path(argv[2])
+    run_dir = routing_path.parent
+    config_path = run_dir / CONFIG_SNAPSHOT_FILENAME
+    output_path = run_dir / COMPLETION_OUTPUT_FILENAME
+
+    # LOAD (main.load_json prints a clear ERROR and exits if a file is missing
+    # or not valid JSON; that exit is intercepted only to add the stale warning)
+    try:
+        routing_results = load_json(routing_path)
+        routing_config = load_json(config_path)
+        decisions = load_json(decisions_path)
+    except SystemExit:
+        _exit_without_writing(output_path)
+
+    # VALIDATE + COMPLETE
+    errors = []
+    completion = build_completion(routing_results, decisions, routing_config, errors)
+    if errors:
+        for error in errors:
+            print(error)
+        print(f"Validation failed: {len(errors)} error(s). {COMPLETION_OUTPUT_FILENAME} not written.")
+        _exit_without_writing(output_path)
+
+    result = {
+        "routing_results_file": str(routing_path),
+        "routing_config_file": str(config_path),
+        "human_decisions_file": str(decisions_path),
+        **completion,
+    }
+
+    # REPORT
+    for submission in result["submissions"]:
+        print(submission["submission_id"], submission["completion_status"],
+              "pending:", submission["pending_checks"],
+              "anomalies:", [a["policy_check"] for a in submission["unresolved_anomalies"]])
+    summary = result["summary"]
+    print(f"Resolved: {summary['checks_resolved']}/{summary['total_submissions']}  "
+          f"Human decisions applied: {summary['human_decisions_applied']}")
+
+    # SAVE (serialize first, so a failure cannot leave a partial file)
+    text = json.dumps(result, indent=2)
+    with open(output_path, "w") as file:
+        file.write(text)
+    print("Review completion written to:", output_path)
+    return result
+
+
+if __name__ == "__main__":
+    main()
