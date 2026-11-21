@@ -1,9 +1,10 @@
 # Project Snapshot — Mini Eval Harness
 
-**Checkpoint:** M07 complete (MCP evidence retrieval before inference, `--evidence` mode)
-**Previous commits:** M06.2 `a75797c` (three-verdict contract) · M06.1 `3a61fe7` · M05 `d81ec0b` · M04 `185a171`
-**Date:** 2026-11-19
+**Checkpoint:** M08 (human review completion core `d4512d0`, CLI `a82e87e`, offline demo M08.3)
+**Previous commits:** M07 `29df1d6` (MCP evidence) · M06.2 `a75797c` (three-verdict contract) · M06.1 `3a61fe7` · M05 `d81ec0b` · M04 `185a171`
+**Date:** 2026-11-20
 **Python:** 3.13 (`.venv`), dependencies: `openai==3.46.0`, `python-dotenv==1.1.1`, `mcp==2.3.0`
+(only inference and evidence mode need them; routing, evaluation, human review and `demo.py` are stdlib-only)
 
 **Status:** learning/evaluation harness on synthetic data. **Not production-ready.**
 
@@ -26,6 +27,11 @@ An AI app-review **screening** pipeline:
 3. **Evaluation:** measures the model's verdicts against a hand-labelled
    golden dataset for every (submission, policy check) pair, treating
    `UNDECIDED` as an abstention.
+4. **Human review completion (M08):** applies human PASS/FAIL decisions to
+   the checks routed to `HUMAN_REVIEW` and derives a check-level completion
+   record, without changing earlier artifacts.
+
+`demo.py` (M08.3) runs steps 2–4 offline on recorded predictions.
 
 By default the model sees only `app_name` and `description`. This is
 description-based screening, not a full compliance review. With `--evidence`
@@ -33,7 +39,8 @@ description-based screening, not a full compliance review. With `--evidence`
 added as an untrusted data block when available.
 
 Final developer-facing decisions (approve/reject the app), notifications,
-enforcement and routing evaluation are **out of scope**.
+enforcement and routing evaluation are **out of scope**. `CHECKS_RESOLVED`
+means every check has a final PASS/FAIL, not that the app is approved.
 
 ---
 
@@ -59,10 +66,17 @@ routing_config.json ───────┼──► routing_engine.py   │
 routing_config.json ───────┴──► main.py ◄───────────┘
      (check names only)          ▲   ├──► eval_results.json
 golden_dataset.json ─────────────┘   └──► golden_dataset_used.json
+
+routing_results.json + routing_config_used.json ──┐
+human_decisions.json ─────────────────────────────┴──► human_review.py ──► review_completion.json
+
+fixtures/demo_predictions.json ──► demo.py ──► runs/demo_<ts>/ : routing → evaluation → human review
+                                   (subprocesses, offline)
 ```
 
 Routing and evaluation both read `predictions.json` independently and are run
-as separate commands. Neither depends on the other's output.
+as separate commands. Neither depends on the other's output. Human review
+completion needs the routing output and the run's config snapshot.
 
 ### How the active components connect
 
@@ -81,6 +95,10 @@ as separate commands. Neither depends on the other's output.
 | `routing_engine.py` | `predictions.json`, `routing_config.json` | `routing_results.json`, `routing_config_used.json` | Per-check routing + submission `workflow_status`. Also provides `load_routing_config()` to `main.py`. |
 | `golden_dataset.json` | — | Hand-labelled expected PASS/FAIL per check | Ground truth for `main.py` |
 | `main.py` | `predictions.json`, `golden_dataset.json`, check names from `routing_config.json` | `eval_results.json`, `golden_dataset_used.json` | Model evaluation. Does not use routing permissions or routing results. |
+| `human_review.py` | `routing_results.json`, `routing_config_used.json`, `human_decisions.json` | `review_completion.json` | Validates decisions against routing, applies them, lists pending checks and anomalies. Reuses `load_json` / `_index_by_submission_id` from `main.py`. |
+| `fixtures/example_human_decisions.json` | — | One synthetic decision (APP002 gambling FAIL) | Example input for `human_review.py` and the demo |
+| `fixtures/demo_predictions.json` | — | Recorded predictions (4 submissions) | Seed for `demo.py` |
+| `demo.py` | The two fixtures above, `golden_dataset.json` | A new `runs/demo_<ts>/` with all six artifacts | Calls the routing, evaluation and human review CLIs with `sys.executable`; stops at the first failure. Never imports `invoke_llm`. |
 | `test_*.py` | Module functions | Pass/fail | Unit + end-to-end tests; inference tests use a fake client |
 
 ### Inference (`invoke_llm.py`)
@@ -183,6 +201,59 @@ One `AUTO_REJECT` never rejects the whole submission.
 Undefined metrics (zero denominator) are `null` in JSON and `N/A` in the terminal.
 Metric definitions: see [README.md](README.md#metrics).
 
+### Human review completion (`human_review.py`, M08.1–M08.2)
+
+Pure core functions plus a small CLI:
+
+- `validate_decisions(decisions, routing_by_id, expected_checks, errors)`
+  collects every error and returns `{(submission_id, policy_check): decision}`.
+  - **Rejected decisions:** non-list input, non-object records, missing or
+    unknown fields, blank strings, values other than `PASS`/`FAIL`, non-ISO
+    `decided_at`, unknown submissions or checks, checks with an anomaly
+    (`CHECK_HAS_ANOMALY`), automated checks (`NOT_PENDING_HUMAN_REVIEW`).
+  - **Duplicates:** every decision for a duplicated (submission, check) key is
+    rejected, even identical ones (`DUPLICATE_DECISION`).
+- `complete_submission(routing_record, decisions, expected_checks)` returns
+  one completion record and never modifies its inputs. Each routed entry is
+  classified as one of:
+  - **AI-final:** `AUTO_APPROVE` → PASS, `AUTO_REJECT` → FAIL, source `AI`.
+  - **Human-decidable:** `HUMAN_REVIEW` with `MODEL_UNDECIDED` or
+    `CONFIG_REQUIRES_HUMAN`. The outcome is the decision (source `HUMAN`), or
+    pending when there is none.
+  - **Anomaly:**
+    - `UNKNOWN_CHECK`, `DUPLICATE_CHECK`, `MISSING_CHECK`, `INVALID_VERDICT`,
+      or any other routing reason;
+    - an expected check absent from the record (`NOT_IN_ROUTING_RESULTS`);
+    - a duplicated entry for an expected check (`DUPLICATE_ROUTED_ENTRY`);
+    - an automated action that contradicts the verdict
+      (`AUTOMATED_ACTION_CONTRADICTS_VERDICT`).
+
+    An anomaly has outcome `null`, is listed in `unresolved_anomalies`,
+    cannot be decided by a human, and blocks `CHECKS_RESOLVED`.
+  - **Programming error:** a decision passed in for a check a human may not
+    decide raises `ValueError`.
+- `python human_review.py runs/<id>/routing_results.json human_decisions.json`
+  reads the check names from the run's `routing_config_used.json`.
+  - **Any load or validation error:** exit code 1, nothing written. An
+    existing `review_completion.json` is kept, with a stale-results warning.
+  - **Missing decisions are valid:** those checks stay pending.
+
+### Offline demo (`demo.py`, M08.3)
+
+1. Creates a new folder `runs/demo_<timestamp>[_N]/`. It never reuses an
+   existing folder.
+2. Copies `fixtures/demo_predictions.json` into it as `predictions.json`.
+3. Runs `routing_engine.py`, `main.py` and `human_review.py` (with
+   `fixtures/example_human_decisions.json`) as subprocesses, and stops at
+   the first non-zero exit.
+4. Prints a summary and the paths of the six artifacts.
+
+No API, network, MCP server or third-party package is used. The fixture is
+an unmodified copy of the M07.3 baseline `runs/2026-11-19_14-25-55/predictions.json`
+(sha256 `29cf9460…5921f`). It contains only `submission_id`, `policy_check`,
+`verdict` and model `justification` for the four synthetic submissions. It is
+the one deliberate exception to "run outputs are not committed".
+
 ---
 
 ## 3. Decision contract (M06.2)
@@ -257,18 +328,42 @@ compatibility; they equal `correct_decisions` and `incorrect_decisions`.
 
 `predictions.json` has the same schema with or without `--evidence`.
 
+### `review_completion.json` structure (M08)
+
+```text
+routing_results_file, routing_config_file, human_decisions_file, policy_checks
+summary:     total_submissions, checks_resolved, pending_human_review, human_decisions_applied
+submissions: [{submission_id, routing_workflow_status (copied from routing),
+               completion_status: CHECKS_RESOLVED|PENDING_HUMAN_REVIEW,
+               pending_checks: [check],
+               unresolved_anomalies: [{policy_check, routing_reason}],
+               checks: [{policy_check,
+                         routing (original routed entry, verbatim),
+                         human_decision (decision record or null),
+                         final_outcome: PASS|FAIL|null, outcome_source: AI|HUMAN|null,
+                         human_agrees_with_ai: true|false|null, anomaly: bool}]}]
+```
+
+`human_decisions.json`: `[{submission_id, policy_check, decision: PASS|FAIL,
+reviewer, rationale, decided_at (ISO-8601)}]`. There is no application-level
+disposition field anywhere.
+
 ---
 
 ## 5. Execution
 
 ```bash
+python3 demo.py                                                                  # offline demo, stdlib only, no venv needed
+
 source .venv/bin/activate
 
 python invoke_llm.py                                                            # paid API calls, description-only
 python invoke_llm.py --evidence                                                 # paid API calls, MCP evidence first
 python routing_engine.py runs/<run_id>/predictions.json                         # no API calls
 python main.py runs/<run_id>/predictions.json golden_dataset.json               # no API calls
+python human_review.py runs/<run_id>/routing_results.json human_decisions.json   # no API calls
 python test_main.py; python test_routing.py                                     # no API calls
+python test_human_review.py; python test_demo.py                                 # no API calls
 python test_invoke_llm.py; python test_api_failure.py                           # no API calls (fake client)
 python test_evidence.py; python test_mcp_server.py; python test_evidence_client.py  # offline MCP tests
 ```
@@ -285,7 +380,11 @@ Run IDs have one-second resolution; run inference commands one after another.
 
 Routing: APP001 and APP003 `AUTOMATED_CHECKS_COMPLETE`; APP002
 `PENDING_HUMAN_REVIEW` (`real_money_gambling`). 8 `AUTO_APPROVE`,
-0 `AUTO_REJECT`, 1 `HUMAN_REVIEW`. Evaluation: 9/9 correct, accuracy 100%.
+0 `AUTO_REJECT`, 1 `HUMAN_REVIEW`. Evaluation at the time: 9/9 correct, accuracy 100%.
+
+This run predates SYN001. Against the current four-submission golden dataset,
+`main.py` on it stops with `SYN001: MISSING PREDICTION` (verified in M08.3).
+It is kept as a historical artifact; `demo.py` is the worked example now.
 
 ### M06.2 Part A — run `2026-11-17_22-00-12` (three-verdict prompt, local only)
 
@@ -381,7 +480,17 @@ contradicting reassuring evidence). The justification did not mention the
 conflict. TEST_CONFLICT is not in the dataset, and no project files or runs
 were changed.
 
-### Tests (100, no API calls)
+### M08.3 — offline demo (`python demo.py`, no API calls)
+
+Routing: APP001 and APP003 `AUTOMATED_CHECKS_COMPLETE`; APP002 and SYN001
+`PENDING_HUMAN_REVIEW` (`real_money_gambling`). Evaluation: 11/12 correct,
+0 mismatches, 1 abstention (SYN001 gambling); accuracy 91.67%, decision
+accuracy 100%, decision coverage 91.67%. These are the M07.3 baseline numbers.
+Human review completion with the example decision (APP002 gambling FAIL,
+agreeing with the AI): 3/4 `CHECKS_RESOLVED`, SYN001 `PENDING_HUMAN_REVIEW`
+with `pending_checks: ["real_money_gambling"]`.
+
+### Tests (124, no API calls)
 
 | File | Tests |
 |---|---|
@@ -392,6 +501,8 @@ were changed.
 | `test_evidence.py` | 14 |
 | `test_mcp_server.py` | 8 |
 | `test_evidence_client.py` | 10 |
+| `test_human_review.py` | 23 |
+| `test_demo.py` | 1 (end-to-end demo in a temporary runs root; checks committed fixtures and the reference run are unchanged) |
 
 MCP tests run the real server offline (in-process, or as a stdio subprocess
 with a Python audit hook that blocks DNS and internet sockets).
@@ -410,6 +521,11 @@ with a Python audit hook that blocks DNS and internet sockets).
 | `evidence.py` | Evidence URL validation, size cap, provenance |
 | `routing_engine.py` | Check routing + submission workflow |
 | `main.py` | Check-level model evaluator |
+| `human_review.py` | Human review completion (core + CLI) |
+| `demo.py` | Offline end-to-end demo on recorded predictions |
+| `fixtures/demo_predictions.json` | Recorded M07.3 baseline predictions (demo seed) |
+| `fixtures/example_human_decisions.json` | Synthetic example human decision |
+| `test_human_review.py`, `test_demo.py` | Human review and demo tests |
 | `test_main.py`, `test_routing.py`, `test_invoke_llm.py`, `test_api_failure.py` | Tests (fake client for inference) |
 | `test_evidence.py`, `test_mcp_server.py`, `test_evidence_client.py` | Offline evidence / MCP tests |
 | `routing_config.json` | Routing permissions + canonical check names |
@@ -429,7 +545,8 @@ with a Python audit hook that blocks DNS and internet sockets).
 `.pytest_cache/`, `.DS_Store`, and all run files except the three M04
 reference artifacts. This includes the M06.2 Part A run `2026-11-17_22-00-12`,
 the M07.3 runs `2026-11-19_14-25-55` and `2026-11-19_14-26-12` (kept locally),
-and generated `eval_results.json` / `golden_dataset_used.json`. The M07.4
+and generated `eval_results.json` / `golden_dataset_used.json` /
+`review_completion.json`, and every `runs/demo_*` folder. The M07.4
 harness and its result were temporary and are not in the repository.
 
 ---
@@ -449,8 +566,9 @@ harness and its result were temporary and are not in the repository.
 5. **No prompt snapshot.** Inference runs do not save the prompt (or model
    settings) they used, so a run cannot be tied to a prompt version.
    `evidence.json` records evidence provenance only.
-6. **Separate steps.** Routing and evaluation are run as separate commands;
-   there is no single pipeline command or run manifest.
+6. **Separate steps.** Routing, evaluation and human review are separate
+   commands; there is no pipeline orchestrator or run manifest. `demo.py`
+   chains them only for the recorded demo.
 7. **Duplicate golden keys are undetectable.** Python's JSON parser keeps the
    last value if a check name appears twice inside `expected_checks`.
 8. **Overwrites on re-run.** Routing and evaluation overwrite their output files
@@ -483,6 +601,29 @@ harness and its result were temporary and are not in the repository.
     `evidence._result`.
 18. **M07.4 is not reproducible from the repository.** Its harness was
     temporary; the result is recorded here only.
-19. **Out of scope:** final dispositions, notifications, enforcement, routing
-    evaluation, model-driven tool calling, and real (non-synthetic) evidence
-    sources.
+19. **The demo is a fixed recording.** It does not exercise inference or
+    evidence retrieval; live runs vary and may differ from the recorded
+    verdicts. Its numbers are the M07.3 baseline, not a new measurement.
+20. **Human review is check-level and synthetic.** No reviewer
+    authentication, queues, assignment or audit log beyond the decision
+    record; the only example decision is synthetic.
+21. **No full routing integrity check.** `human_review.py` checks each routed
+    entry (duplicates, action vs verdict) but does not re-run routing from
+    `predictions.json` and the config snapshot.
+22. **Config can differ between steps.** Routing and evaluation read the live
+    `routing_config.json`; human review reads the run's
+    `routing_config_used.json`. Editing the config between steps can make them
+    disagree.
+23. **Stale output on failure.** A failed `human_review.py` run keeps an
+    earlier `review_completion.json` (with a warning) rather than deleting it.
+24. **Reference run is historical.** `runs/2026-11-15_15-36-16` has no SYN001,
+    so it no longer evaluates against the golden dataset; running
+    `routing_engine.py` on it would overwrite its committed files.
+25. **Raw tracebacks.** `routing_engine.py` does not catch a missing or
+    malformed predictions file. Inside `demo.py` that only stops the demo
+    with the step's non-zero exit code.
+26. **More private helper reuse.** `human_review.py` imports
+    `main._index_by_submission_id`.
+27. **Out of scope:** final dispositions, notifications, enforcement, routing
+    evaluation, model-driven tool calling, real (non-synthetic) evidence
+    sources, a UI and a database.

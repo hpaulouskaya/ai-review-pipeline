@@ -1,0 +1,82 @@
+[
+  {
+    "submission_id": "APP001",
+    "checks": [
+      {
+        "policy_check": "metadata_quality",
+        "verdict": "PASS",
+        "justification": "The application name is meaningful and the description clearly explains its educational purpose for children aged 6-10."
+      },
+      {
+        "policy_check": "real_money_gambling",
+        "verdict": "PASS",
+        "justification": "The description does not mention any form of gambling, wagering, or prizes involving real money."
+      },
+      {
+        "policy_check": "child_safety",
+        "verdict": "PASS",
+        "justification": "The application is an educational game for children and does not indicate any promotion of dangerous or unsafe activities involving children."
+      }
+    ]
+  },
+  {
+    "submission_id": "APP002",
+    "checks": [
+      {
+        "policy_check": "metadata_quality",
+        "verdict": "PASS",
+        "justification": "The name and description clearly indicate the app is a casino game involving slot machines and real money, which is a meaningful and compatible purpose."
+      },
+      {
+        "policy_check": "real_money_gambling",
+        "verdict": "FAIL",
+        "justification": "The description explicitly states that users can deposit real money and win cash prizes, which constitutes real-money gambling."
+      },
+      {
+        "policy_check": "child_safety",
+        "verdict": "PASS",
+        "justification": "The description does not mention children or any unsafe activities involving children."
+      }
+    ]
+  },
+  {
+    "submission_id": "APP003",
+    "checks": [
+      {
+        "policy_check": "metadata_quality",
+        "verdict": "PASS",
+        "justification": "The name and description clearly explain the app's purpose as a fitness tracking tool."
+      },
+      {
+        "policy_check": "real_money_gambling",
+        "verdict": "PASS",
+        "justification": "The description does not mention any gambling or real-money wagers."
+      },
+      {
+        "policy_check": "child_safety",
+        "verdict": "PASS",
+        "justification": "There is no indication of dangerous activities or unsafe interactions involving children."
+      }
+    ]
+  },
+  {
+    "submission_id": "SYN001",
+    "checks": [
+      {
+        "policy_check": "metadata_quality",
+        "verdict": "PASS",
+        "justification": "The name and description clearly explain the application's purpose to spin a wheel daily for prizes and bonuses."
+      },
+      {
+        "policy_check": "real_money_gambling",
+        "verdict": "UNDECIDED",
+        "justification": "The description mentions winning prizes but does not clarify whether the prizes involve real money or cash equivalents."
+      },
+      {
+        "policy_check": "child_safety",
+        "verdict": "PASS",
+        "justification": "There is no indication that the application promotes dangerous or unsafe activities involving children."
+      }
+    ]
+  }
+]
